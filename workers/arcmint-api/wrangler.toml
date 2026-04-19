@@ -1,0 +1,13 @@
+name = "arcmint-api"
+main = "src/index.js"
+compatibility_date = "2024-12-01"
+routes = [
+  { pattern = "api.arcsuite.xyz", custom_domain = true }
+]
+
+[[r2_buckets]]
+binding = "STORAGE"
+bucket_name = "arcsuite-storage"
+
+[vars]
+ALLOWED_ORIGIN = "https://arcsuite.xyz"
