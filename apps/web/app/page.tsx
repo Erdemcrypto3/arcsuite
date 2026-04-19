@@ -95,10 +95,10 @@ const apps: AppCard[] = [
 function StatusBadge({ status }: { status: AppCard['status'] }) {
   const styles =
     status === 'live'
-      ? 'bg-emerald-500/20 text-emerald-300 ring-emerald-500/40'
+      ? 'bg-emerald-50 text-emerald-700 ring-emerald-200'
       : status === 'building'
-      ? 'bg-amber-500/20 text-amber-300 ring-amber-500/40'
-      : 'bg-arc-purple/30 text-arc-gold ring-arc-purple/50';
+      ? 'bg-amber-50 text-amber-700 ring-amber-200'
+      : 'bg-arc-100 text-arc-600 ring-arc-200';
   const label = status === 'live' ? 'Live' : status === 'building' ? 'Building' : 'Planned';
   return (
     <span
@@ -113,14 +113,14 @@ export default function Home() {
   return (
     <main className="mx-auto max-w-6xl px-6 py-16 sm:py-24">
       <header className="mb-16">
-        <div className="mb-4 inline-flex items-center gap-2 rounded-full bg-arc-400/20 px-3 py-1 text-xs font-medium text-arc-50 ring-1 ring-inset ring-arc-400/40">
-          <span className="h-1.5 w-1.5 rounded-full bg-arc-gold" />
+        <div className="mb-4 inline-flex items-center gap-2 rounded-full bg-arc-600/10 px-3 py-1 text-xs font-medium text-arc-600 ring-1 ring-inset ring-arc-600/20">
+          <span className="h-1.5 w-1.5 rounded-full bg-arc-500" />
           Built for Arc — Circle&apos;s L1
         </div>
-        <h1 className="text-4xl font-semibold tracking-tight text-white sm:text-6xl">
+        <h1 className="text-4xl font-semibold tracking-tight text-arc-600 sm:text-6xl">
           Arc Suite
         </h1>
-        <p className="mt-6 max-w-2xl text-lg leading-relaxed text-arc-50/80">
+        <p className="mt-6 max-w-2xl text-lg leading-relaxed text-arc-700/70">
           A portfolio of small, focused apps for anyone using or building on Arc.
           Track wallets, play games, say gm on-chain, publish articles as NFTs, and more — all
           under one roof, all open source.
@@ -128,7 +128,7 @@ export default function Home() {
         <div className="mt-8 flex flex-wrap gap-4">
           <a
             href="https://github.com/erdemcrypto3/arcsuite"
-            className="rounded-lg bg-arc-gradient px-5 py-2.5 text-sm font-semibold text-white shadow-sm hover:opacity-90 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-arc-300"
+            className="rounded-lg bg-arc-600 px-5 py-2.5 text-sm font-semibold text-white shadow-sm hover:bg-arc-700 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-arc-500"
             target="_blank"
             rel="noopener noreferrer"
           >
@@ -136,7 +136,7 @@ export default function Home() {
           </a>
           <a
             href="https://arc.network"
-            className="rounded-lg bg-arc-400/20 px-5 py-2.5 text-sm font-semibold text-arc-50 ring-1 ring-inset ring-arc-400/40 hover:bg-arc-400/30 shadow-sm"
+            className="rounded-lg bg-white px-5 py-2.5 text-sm font-semibold text-arc-600 ring-1 ring-inset ring-arc-200 hover:bg-arc-100 shadow-sm"
             target="_blank"
             rel="noopener noreferrer"
           >
@@ -146,7 +146,7 @@ export default function Home() {
       </header>
 
       <section>
-        <h2 className="mb-6 text-sm font-semibold uppercase tracking-wider text-arc-gold">
+        <h2 className="mb-6 text-sm font-semibold uppercase tracking-wider text-arc-400">
           Apps in the suite
         </h2>
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
@@ -154,20 +154,20 @@ export default function Home() {
             <a
               key={app.path}
               href={app.status === 'live' ? `/${app.path}` : undefined}
-              className={`group block rounded-xl bg-arc-700/50 p-5 ring-1 ring-inset ring-arc-400/20 shadow-sm transition ${
+              className={`group block rounded-xl bg-white p-5 ring-1 ring-inset ring-arc-200/60 shadow-sm transition ${
                 app.status === 'live'
-                  ? 'hover:bg-arc-700/80 hover:ring-arc-300/40 cursor-pointer'
+                  ? 'hover:shadow-md hover:ring-arc-500/30 cursor-pointer'
                   : 'opacity-70'
               }`}
             >
               <div className="mb-2 flex items-start justify-between gap-2">
-                <h3 className="text-base font-semibold text-white">{app.title}</h3>
+                <h3 className="text-base font-semibold text-arc-600">{app.title}</h3>
                 <StatusBadge status={app.status} />
               </div>
-              <p className="mb-4 text-sm leading-relaxed text-arc-50/70">
+              <p className="mb-4 text-sm leading-relaxed text-arc-700/60">
                 {app.description}
               </p>
-              <div className="font-mono text-xs text-arc-peach group-hover:text-arc-gold">
+              <div className="font-mono text-xs text-arc-500 group-hover:text-arc-500">
                 /{app.path}
               </div>
             </a>
@@ -175,13 +175,13 @@ export default function Home() {
         </div>
       </section>
 
-      <footer className="mt-24 border-t border-arc-400/20 pt-8 text-sm text-arc-50/50">
+      <footer className="mt-24 border-t border-arc-200 pt-8 text-sm text-arc-400">
         <div className="flex flex-wrap items-center justify-between gap-4">
           <span>
             Arc Suite · MIT license ·{' '}
             <a
               href="https://github.com/erdemcrypto3/arcsuite"
-              className="hover:text-arc-gold"
+              className="hover:text-arc-500"
               target="_blank"
               rel="noopener noreferrer"
             >

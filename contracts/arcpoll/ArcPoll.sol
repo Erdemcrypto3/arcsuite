@@ -4,6 +4,7 @@ pragma solidity ^0.8.24;
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import "@openzeppelin/contracts/utils/Pausable.sol";
 
 /**
  * @title ArcPoll
@@ -14,8 +15,19 @@ import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
  *         MVP: Polls are shown to all matching wallets via frontend
  *         category matching — no per-wallet record generation needed.
  *         Users respond directly if their categories match.
+ *
+ * @dev Audit fixes applied (kimi_audit_v01, 2026-04-19):
+ *      C-01: nonReentrant on approvePoll/rejectPoll
+ *      H-02: O(1) audience size via category counters
+ *      H-03: getLeaderboard removed (off-chain indexing)
+ *      M-02: Events for all state changes
+ *      M-03: MAX_POLL_DURATION deadline cap
+ *      M-04: String length validation
+ *      L-01: Comment fix (Ink → Arc)
+ *      L-04: Pausable added
+ *      L-05: Zero-address checks
  */
-contract ArcPoll is Ownable, ReentrancyGuard {
+contract ArcPoll is Ownable, ReentrancyGuard, Pausable {
     // ──────────────────── Types ────────────────────
 
     enum PollStatus { PENDING, ACTIVE, REJECTED, CLOSED }
@@ -41,13 +53,29 @@ contract ArcPoll is Ownable, ReentrancyGuard {
         uint256 payment;         // USDC amount paid
     }
 
+    // ──────────────────── Constants ────────────────────
+
+    uint256 public constant MAX_POLL_DURATION = 30 days;         // [M-03]
+    uint256 public constant MAX_STRING_LENGTH = 512;             // [M-04]
+    uint256 public constant MAX_CID_LENGTH = 128;                // [M-04]
+
+    uint256 public constant POINTS_REGISTER = 50;
+    uint256 public constant POINTS_RESPOND = 10;
+    uint256 public constant POINTS_EARLY_BIRD = 15;
+    uint256 public constant POINTS_STREAK_BONUS = 20;
+    uint256 public constant STREAK_THRESHOLD = 10;
+
     // ──────────────────── State ────────────────────
 
-    IERC20 public paymentToken;  // USDC on Ink
+    IERC20 public paymentToken;  // USDC on Arc [L-01]
     address public treasury;
 
     // Category names (index → name) for frontend reference
+    // NOTE: Categories are append-only by design (max 32)
     string[] public categories;
+
+    // [H-02] O(1) audience size: category bit index → registered user count
+    mapping(uint256 => uint256) public categoryUserCount;
 
     // Pricing tiers: maxAudience → price
     uint256[] public tierMaxAudience;
@@ -70,22 +98,20 @@ contract ArcPoll is Ownable, ReentrancyGuard {
     // Approved admins
     mapping(address => bool) public admins;
 
-    // Points config
-    uint256 public constant POINTS_REGISTER = 50;
-    uint256 public constant POINTS_RESPOND = 10;
-    uint256 public constant POINTS_EARLY_BIRD = 15;
-    uint256 public constant POINTS_STREAK_BONUS = 20;
-    uint256 public constant STREAK_THRESHOLD = 10;
-
     // ──────────────────── Events ────────────────────
 
     event UserRegistered(address indexed user, uint32 categoryMask);
-    event CategoriesUpdated(address indexed user, uint32 categoryMask);
+    event CategoriesUpdated(address indexed user, uint32 oldMask, uint32 newMask);
     event PollSubmitted(uint256 indexed pollId, address indexed sender, uint32 targetCategory, uint256 deadline);
     event PollApproved(uint256 indexed pollId);
     event PollRejected(uint256 indexed pollId);
+    event PollClosed(uint256 indexed pollId);                    // [M-02]
     event PollResponse(uint256 indexed pollId, address indexed user, uint8 optionIndex);
     event PointsAwarded(address indexed user, uint256 amount, uint256 total);
+    event PricingUpdated(uint256 tierCount);                     // [M-02]
+    event CategoryAdded(uint256 indexed index, string name);     // [M-02]
+    event TreasuryUpdated(address indexed oldTreasury, address indexed newTreasury); // [M-02]
+    event PaymentTokenUpdated(address indexed oldToken, address indexed newToken);   // [M-02]
 
     // ──────────────────── Modifiers ────────────────────
 
@@ -97,6 +123,9 @@ contract ArcPoll is Ownable, ReentrancyGuard {
     // ──────────────────── Constructor ────────────────────
 
     constructor(address _paymentToken, address _treasury) Ownable(msg.sender) {
+        require(_paymentToken != address(0), "Invalid token");   // [L-05]
+        require(_treasury != address(0), "Invalid treasury");    // [L-05]
+
         paymentToken = IERC20(_paymentToken);
         treasury = _treasury;
 
@@ -125,7 +154,7 @@ contract ArcPoll is Ownable, ReentrancyGuard {
 
     // ──────────────────── User Functions ────────────────────
 
-    function register(uint32 _categoryMask) external {
+    function register(uint32 _categoryMask) external whenNotPaused {
         require(!users[msg.sender].registered, "Already registered");
         require(_categoryMask > 0, "Select at least one category");
 
@@ -139,19 +168,29 @@ contract ArcPoll is Ownable, ReentrancyGuard {
         });
         userList.push(msg.sender);
 
+        // [H-02] Update category counters
+        _incrementCategoryCounts(_categoryMask);
+
         emit UserRegistered(msg.sender, _categoryMask);
         emit PointsAwarded(msg.sender, POINTS_REGISTER, POINTS_REGISTER);
     }
 
-    function updateCategories(uint32 _categoryMask) external {
+    function updateCategories(uint32 _categoryMask) external whenNotPaused {
         require(users[msg.sender].registered, "Not registered");
         require(_categoryMask > 0, "Select at least one category");
+
+        uint32 oldMask = users[msg.sender].categoryMask;
         users[msg.sender].categoryMask = _categoryMask;
-        emit CategoriesUpdated(msg.sender, _categoryMask);
+
+        // [H-02] Update category counters
+        _decrementCategoryCounts(oldMask);
+        _incrementCategoryCounts(_categoryMask);
+
+        emit CategoriesUpdated(msg.sender, oldMask, _categoryMask);
     }
 
     /// @notice Respond to a poll. User must be registered and categories must match.
-    function respond(uint256 _pollId, uint8 _optionIndex) external {
+    function respond(uint256 _pollId, uint8 _optionIndex) external whenNotPaused {
         Poll storage poll = polls[_pollId];
         require(poll.status == PollStatus.ACTIVE, "Poll not active");
         require(block.timestamp <= poll.deadline, "Deadline passed");
@@ -189,10 +228,13 @@ contract ArcPoll is Ownable, ReentrancyGuard {
 
     // ──────────────────── Sender Functions ────────────────────
 
-    function getAudienceSize(uint32 _categoryMask) external view returns (uint256 count) {
-        for (uint256 i = 0; i < userList.length; i++) {
-            if (users[userList[i]].categoryMask & _categoryMask > 0) {
-                count++;
+    /// @notice O(1) audience size using category counters [H-02]
+    function getAudienceSize(uint32 _categoryMask) public view returns (uint256 count) {
+        // Sum users across targeted categories (may overcount overlapping users,
+        // but provides a fast upper-bound for pricing. Exact count available off-chain.)
+        for (uint256 i = 0; i < categories.length; i++) {
+            if (_categoryMask & uint32(1 << i) > 0) {
+                count += categoryUserCount[i];
             }
         }
     }
@@ -211,13 +253,20 @@ contract ArcPoll is Ownable, ReentrancyGuard {
         string[] calldata _options,
         uint256 _deadline,
         uint32 _targetCategory
-    ) external nonReentrant returns (uint256 pollId) {
+    ) external nonReentrant whenNotPaused returns (uint256 pollId) {
         require(_options.length >= 2 && _options.length <= 10, "2-10 options");
         require(_deadline > block.timestamp, "Deadline must be future");
+        require(_deadline <= block.timestamp + MAX_POLL_DURATION, "Deadline too far"); // [M-03]
         require(_targetCategory > 0, "Must target a category");
+        require(bytes(_contentCID).length <= MAX_CID_LENGTH, "CID too long");         // [M-04]
+
+        // [M-04] Validate option string lengths
+        for (uint256 i = 0; i < _options.length; i++) {
+            require(bytes(_options[i]).length <= MAX_STRING_LENGTH, "Option too long");
+        }
 
         // Calculate audience and price
-        uint256 audience = this.getAudienceSize(_targetCategory);
+        uint256 audience = getAudienceSize(_targetCategory);
         require(audience > 0, "No matching audience");
         uint256 price = getPrice(audience);
 
@@ -252,7 +301,7 @@ contract ArcPoll is Ownable, ReentrancyGuard {
 
     // ──────────────────── Admin Functions ────────────────────
 
-    function approvePoll(uint256 _pollId) external onlyAdmin {
+    function approvePoll(uint256 _pollId) external onlyAdmin nonReentrant { // [C-01]
         Poll storage poll = polls[_pollId];
         require(poll.status == PollStatus.PENDING, "Not pending");
         poll.status = PollStatus.ACTIVE;
@@ -263,7 +312,7 @@ contract ArcPoll is Ownable, ReentrancyGuard {
         emit PollApproved(_pollId);
     }
 
-    function rejectPoll(uint256 _pollId) external onlyAdmin {
+    function rejectPoll(uint256 _pollId) external onlyAdmin nonReentrant { // [C-01]
         Poll storage poll = polls[_pollId];
         require(poll.status == PollStatus.PENDING, "Not pending");
         poll.status = PollStatus.REJECTED;
@@ -278,6 +327,7 @@ contract ArcPoll is Ownable, ReentrancyGuard {
         Poll storage poll = polls[_pollId];
         require(poll.status == PollStatus.ACTIVE, "Not active");
         poll.status = PollStatus.CLOSED;
+        emit PollClosed(_pollId); // [M-02]
     }
 
     function setPricing(uint256[] calldata _maxAudience, uint256[] calldata _prices) external onlyAdmin {
@@ -288,11 +338,15 @@ contract ArcPoll is Ownable, ReentrancyGuard {
             tierMaxAudience.push(_maxAudience[i]);
             tierPrice.push(_prices[i]);
         }
+        emit PricingUpdated(_maxAudience.length); // [M-02]
     }
 
     function addCategory(string calldata _name) external onlyAdmin {
         require(categories.length < 32, "Max 32 categories");
+        require(bytes(_name).length <= MAX_STRING_LENGTH, "Name too long"); // [M-04]
+        uint256 idx = categories.length;
         categories.push(_name);
+        emit CategoryAdded(idx, _name); // [M-02]
     }
 
     // ──────────────────── Owner Functions ────────────────────
@@ -314,39 +368,62 @@ contract ArcPoll is Ownable, ReentrancyGuard {
     }
 
     function setTreasury(address _treasury) external onlyOwner {
+        require(_treasury != address(0), "Invalid treasury"); // [L-05]
+        address old = treasury;
         treasury = _treasury;
+        emit TreasuryUpdated(old, _treasury); // [M-02]
     }
 
     function setPaymentToken(address _token) external onlyOwner {
+        require(_token != address(0), "Invalid token"); // [L-05]
+        address old = address(paymentToken);
         paymentToken = IERC20(_token);
+        emit PaymentTokenUpdated(old, _token); // [M-02]
+    }
+
+    function pause() external onlyOwner {      // [L-04]
+        _pause();
+    }
+
+    function unpause() external onlyOwner {    // [L-04]
+        _unpause();
     }
 
     // ──────────────────── View Functions ────────────────────
 
-    /// @notice Get all active polls matching a user's categories
-    function getActivePolls(address _user) external view returns (uint256[] memory) {
+    /// @notice Get active polls matching a user's categories, with pagination [H-02]
+    function getActivePolls(address _user, uint256 _offset, uint256 _limit)
+        external view returns (uint256[] memory)
+    {
         uint32 userMask = users[_user].categoryMask;
-        uint256 count = 0;
-        for (uint256 i = 0; i < polls.length; i++) {
+        uint256 totalPolls = polls.length;
+
+        // First pass: collect matching IDs in a temp array
+        uint256[] memory temp = new uint256[](totalPolls);
+        uint256 matchCount = 0;
+        for (uint256 i = 0; i < totalPolls; i++) {
             if (polls[i].status == PollStatus.ACTIVE &&
                 block.timestamp <= polls[i].deadline &&
                 userMask & polls[i].targetCategory > 0) {
-                count++;
+                temp[matchCount++] = i;
             }
         }
-        uint256[] memory result = new uint256[](count);
-        uint256 idx = 0;
-        for (uint256 i = 0; i < polls.length; i++) {
-            if (polls[i].status == PollStatus.ACTIVE &&
-                block.timestamp <= polls[i].deadline &&
-                userMask & polls[i].targetCategory > 0) {
-                result[idx++] = i;
-            }
+
+        // Apply pagination
+        if (_offset >= matchCount) {
+            return new uint256[](0);
+        }
+        uint256 end = _offset + _limit;
+        if (end > matchCount) end = matchCount;
+        uint256 resultLen = end - _offset;
+
+        uint256[] memory result = new uint256[](resultLen);
+        for (uint256 i = 0; i < resultLen; i++) {
+            result[i] = temp[_offset + i];
         }
         return result;
     }
 
-    /// @notice Get all polls (for admin/sender dashboard)
     function getAllPollIds() external view returns (uint256) {
         return polls.length;
     }
@@ -364,17 +441,29 @@ contract ArcPoll is Ownable, ReentrancyGuard {
         return results;
     }
 
-    function getRegisteredUsers(uint32 _categoryMask) external view returns (address[] memory) {
-        uint256 count = 0;
-        for (uint256 i = 0; i < userList.length; i++) {
-            if (users[userList[i]].categoryMask & _categoryMask > 0) count++;
-        }
-        address[] memory result = new address[](count);
-        uint256 idx = 0;
-        for (uint256 i = 0; i < userList.length; i++) {
+    /// @notice Paginated user list for a category [H-02]
+    function getRegisteredUsers(uint32 _categoryMask, uint256 _offset, uint256 _limit)
+        external view returns (address[] memory)
+    {
+        uint256 total = userList.length;
+        address[] memory temp = new address[](total);
+        uint256 matchCount = 0;
+        for (uint256 i = 0; i < total; i++) {
             if (users[userList[i]].categoryMask & _categoryMask > 0) {
-                result[idx++] = userList[i];
+                temp[matchCount++] = userList[i];
             }
+        }
+
+        if (_offset >= matchCount) {
+            return new address[](0);
+        }
+        uint256 end = _offset + _limit;
+        if (end > matchCount) end = matchCount;
+        uint256 resultLen = end - _offset;
+
+        address[] memory result = new address[](resultLen);
+        for (uint256 i = 0; i < resultLen; i++) {
+            result[i] = temp[_offset + i];
         }
         return result;
     }
@@ -391,30 +480,26 @@ contract ArcPoll is Ownable, ReentrancyGuard {
         return categories;
     }
 
-    function getLeaderboard(uint256 _limit) external view returns (address[] memory, uint256[] memory) {
-        uint256 len = userList.length < _limit ? userList.length : _limit;
+    /// @notice [H-03] Leaderboard removed — use off-chain indexing via PointsAwarded events.
+    ///         Subgraph or indexer should track cumulative points per user.
 
-        address[] memory sorted = new address[](userList.length);
-        uint256[] memory pts = new uint256[](userList.length);
-        for (uint256 i = 0; i < userList.length; i++) {
-            sorted[i] = userList[i];
-            pts[i] = users[userList[i]].points;
-        }
-        // Partial selection sort — top N only (fine for L2 view calls)
-        for (uint256 i = 0; i < len; i++) {
-            for (uint256 j = i + 1; j < sorted.length; j++) {
-                if (pts[j] > pts[i]) {
-                    (sorted[i], sorted[j]) = (sorted[j], sorted[i]);
-                    (pts[i], pts[j]) = (pts[j], pts[i]);
-                }
+    // ──────────────────── Internal Helpers ────────────────────
+
+    /// @dev Increment category counters for each bit set in the mask [H-02]
+    function _incrementCategoryCounts(uint32 _mask) internal {
+        for (uint256 i = 0; i < categories.length; i++) {
+            if (_mask & uint32(1 << i) > 0) {
+                categoryUserCount[i]++;
             }
         }
-        address[] memory topAddr = new address[](len);
-        uint256[] memory topPts = new uint256[](len);
-        for (uint256 i = 0; i < len; i++) {
-            topAddr[i] = sorted[i];
-            topPts[i] = pts[i];
+    }
+
+    /// @dev Decrement category counters for each bit set in the mask [H-02]
+    function _decrementCategoryCounts(uint32 _mask) internal {
+        for (uint256 i = 0; i < categories.length; i++) {
+            if (_mask & uint32(1 << i) > 0) {
+                categoryUserCount[i]--;
+            }
         }
-        return (topAddr, topPts);
     }
 }

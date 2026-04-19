@@ -9,18 +9,17 @@ const config: Config = {
     extend: {
       colors: {
         arc: {
-          50: '#cdddf2',    // Sky Sync (light blue)
-          100: '#ACC6E9',   // Light sky
-          200: '#2F578C',   // Mid blue
-          300: '#1434CB',   // Bright blue (accent)
-          400: '#1B3158',   // Protocol Navy (primary brand)
-          500: '#1B3158',   // Protocol Navy
-          600: '#152847',   // Darker navy
-          700: '#0f1d35',   // Deep navy
-          800: '#0a1424',   // Near black navy
-          900: '#060d17',   // Darkest
+          50: '#f5f8fc',     // Page background
+          100: '#e8eef6',    // Card hover
+          200: '#cdddf2',    // Sky Sync (borders, subtle bg)
+          300: '#ACC6E9',    // Light accent
+          400: '#2F578C',    // Mid blue
+          500: '#1434CB',    // Bright blue (links, buttons)
+          600: '#1B3158',    // Protocol Navy (headings, primary text)
+          700: '#152847',    // Darker navy
+          800: '#0f1d35',    // Deep navy
+          900: '#060d17',    // Darkest
         },
-        // Gradient accents from brand kit
         'arc-purple': '#3E2B63',
         'arc-magenta': '#942753',
         'arc-peach': '#F3966F',
