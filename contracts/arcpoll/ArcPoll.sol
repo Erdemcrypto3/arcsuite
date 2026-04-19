@@ -3,6 +3,7 @@ pragma solidity ^0.8.24;
 
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol"; // [H-01 v02]
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/utils/Pausable.sol";
 
@@ -16,18 +17,28 @@ import "@openzeppelin/contracts/utils/Pausable.sol";
  *         category matching — no per-wallet record generation needed.
  *         Users respond directly if their categories match.
  *
- * @dev Audit fixes applied (kimi_audit_v01, 2026-04-19):
- *      C-01: nonReentrant on approvePoll/rejectPoll
- *      H-02: O(1) audience size via category counters
- *      H-03: getLeaderboard removed (off-chain indexing)
- *      M-02: Events for all state changes
- *      M-03: MAX_POLL_DURATION deadline cap
- *      M-04: String length validation
- *      L-01: Comment fix (Ink → Arc)
- *      L-04: Pausable added
- *      L-05: Zero-address checks
+ * @dev Audit fixes applied:
+ *      kimi_audit_v01 (2026-04-19):
+ *        C-01: nonReentrant on approvePoll/rejectPoll
+ *        H-02: O(1) audience size via category counters
+ *        H-03: getLeaderboard removed (off-chain indexing)
+ *        M-02: Events for all state changes
+ *        M-03: MAX_POLL_DURATION deadline cap
+ *        M-04: String length validation
+ *        L-01: Comment fix (Ink → Arc)
+ *        L-04: Pausable added
+ *        L-05: Zero-address checks
+ *      kimi_audit_v02 (2026-04-19):
+ *        H-01: SafeERC20 for all token transfers
+ *        M-03: Streak time decay (STREAK_WINDOW = 7 days)
+ *        M-04: Empty CID validation
+ *        L-03: Duplicate category name check
+ *        I-01: getAllPollIds renamed to getPollCount
+ *        I-04: Empty option string validation
  */
 contract ArcPoll is Ownable, ReentrancyGuard, Pausable {
+    using SafeERC20 for IERC20; // [H-01 v02]
+
     // ──────────────────── Types ────────────────────
 
     enum PollStatus { PENDING, ACTIVE, REJECTED, CLOSED }
@@ -58,6 +69,7 @@ contract ArcPoll is Ownable, ReentrancyGuard, Pausable {
     uint256 public constant MAX_POLL_DURATION = 30 days;         // [M-03]
     uint256 public constant MAX_STRING_LENGTH = 512;             // [M-04]
     uint256 public constant MAX_CID_LENGTH = 128;                // [M-04]
+    uint256 public constant STREAK_WINDOW = 7 days;              // [M-03 v02]
 
     uint256 public constant POINTS_REGISTER = 50;
     uint256 public constant POINTS_RESPOND = 10;
@@ -214,8 +226,12 @@ contract ArcPoll is Ownable, ReentrancyGuard, Pausable {
             pointsEarned = POINTS_EARLY_BIRD;
         }
 
-        // Streak bonus
-        user.streak++;
+        // Streak with time decay [M-03 v02]
+        if (user.lastResponseTime > 0 && block.timestamp > user.lastResponseTime + STREAK_WINDOW) {
+            user.streak = 1; // reset — too long since last response
+        } else {
+            user.streak++;
+        }
         if (user.streak % STREAK_THRESHOLD == 0) {
             pointsEarned += POINTS_STREAK_BONUS;
         }
@@ -260,18 +276,22 @@ contract ArcPoll is Ownable, ReentrancyGuard, Pausable {
         require(_targetCategory > 0, "Must target a category");
         require(bytes(_contentCID).length <= MAX_CID_LENGTH, "CID too long");         // [M-04]
 
-        // [M-04] Validate option string lengths
-        for (uint256 i = 0; i < _options.length; i++) {
-            require(bytes(_options[i]).length <= MAX_STRING_LENGTH, "Option too long");
-        }
-
         // Calculate audience and price
         uint256 audience = getAudienceSize(_targetCategory);
         require(audience > 0, "No matching audience");
         uint256 price = getPrice(audience);
 
-        // Collect payment
-        require(paymentToken.transferFrom(msg.sender, address(this), price), "Payment failed");
+        // [M-04 v02] Validate non-empty CID
+        require(bytes(_contentCID).length > 0, "Empty CID");
+
+        // [I-04 v02] Validate non-empty option strings
+        for (uint256 i = 0; i < _options.length; i++) {
+            require(bytes(_options[i]).length > 0, "Empty option");
+            require(bytes(_options[i]).length <= MAX_STRING_LENGTH, "Option too long");
+        }
+
+        // Collect payment [H-01 v02: safeTransferFrom]
+        paymentToken.safeTransferFrom(msg.sender, address(this), price);
 
         // Create poll
         pollId = polls.length;
@@ -306,8 +326,8 @@ contract ArcPoll is Ownable, ReentrancyGuard, Pausable {
         require(poll.status == PollStatus.PENDING, "Not pending");
         poll.status = PollStatus.ACTIVE;
 
-        // Move payment to treasury
-        paymentToken.transfer(treasury, poll.payment);
+        // Move payment to treasury [H-01 v02: safeTransfer]
+        paymentToken.safeTransfer(treasury, poll.payment);
 
         emit PollApproved(_pollId);
     }
@@ -317,8 +337,8 @@ contract ArcPoll is Ownable, ReentrancyGuard, Pausable {
         require(poll.status == PollStatus.PENDING, "Not pending");
         poll.status = PollStatus.REJECTED;
 
-        // Refund sender
-        paymentToken.transfer(poll.sender, poll.payment);
+        // Refund sender [H-01 v02: safeTransfer]
+        paymentToken.safeTransfer(poll.sender, poll.payment);
 
         emit PollRejected(_pollId);
     }
@@ -343,7 +363,12 @@ contract ArcPoll is Ownable, ReentrancyGuard, Pausable {
 
     function addCategory(string calldata _name) external onlyAdmin {
         require(categories.length < 32, "Max 32 categories");
+        require(bytes(_name).length > 0, "Empty name");
         require(bytes(_name).length <= MAX_STRING_LENGTH, "Name too long"); // [M-04]
+        // [L-03 v02] Check for duplicate category names
+        for (uint256 i = 0; i < categories.length; i++) {
+            require(keccak256(bytes(categories[i])) != keccak256(bytes(_name)), "Duplicate category");
+        }
         uint256 idx = categories.length;
         categories.push(_name);
         emit CategoryAdded(idx, _name); // [M-02]
@@ -424,7 +449,8 @@ contract ArcPoll is Ownable, ReentrancyGuard, Pausable {
         return result;
     }
 
-    function getAllPollIds() external view returns (uint256) {
+    /// @notice Returns total poll count [I-01 v02: renamed from getAllPollIds]
+    function getPollCount() external view returns (uint256) {
         return polls.length;
     }
 
