@@ -5,12 +5,26 @@ const BLOCKSCOUT_API = 'https://testnet.arcscan.app/api';
 const GENERATION_FEE = 0.5; // USDC
 const FEE_RECIPIENT = '0x9E84D77264d94C646dF91A70dbae99C20330eAD0';
 
+// [H-04 fix] Secure CORS validation
 function corsHeaders(origin, allowedOrigin) {
-  const allowed = origin === allowedOrigin || origin?.includes('arcsuite.xyz') || origin?.startsWith('http://localhost');
+  let allowed = false;
+  if (origin) {
+    try {
+      const u = new URL(origin);
+      allowed =
+        origin === allowedOrigin ||
+        u.hostname === 'arcsuite.xyz' ||
+        u.hostname.endsWith('.arcsuite.xyz') ||
+        (u.hostname === 'localhost' && u.protocol === 'http:');
+    } catch {
+      allowed = false;
+    }
+  }
   return {
     'Access-Control-Allow-Origin': allowed ? origin : allowedOrigin,
     'Access-Control-Allow-Methods': 'POST, GET, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type',
+    'Access-Control-Allow-Headers': 'Content-Type, X-Payment-Tx',
+    'Vary': 'Origin',
   };
 }
 
