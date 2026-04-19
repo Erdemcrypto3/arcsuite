@@ -73,12 +73,6 @@ const apps: AppCard[] = [
     status: 'live',
   },
   {
-    title: 'ArcChat',
-    description: 'Wallet-to-wallet messaging on Arc. Every message is a permanent on-chain transaction.',
-    path: 'chat',
-    status: 'live',
-  },
-  {
     title: 'ArcSight',
     description: 'Community insight platform. Projects pay to ask, you earn points for answering.',
     path: 'arcsight',
